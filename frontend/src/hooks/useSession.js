@@ -8,15 +8,14 @@ export function useSession() {
 
   const checkSession = async () => {
     try {
-      const res = await api.health();
-
+      // /api/alerts requires auth — 200 means session is valid, 401 means it's not
+      const res = await api.getAlerts();
       if (res.ok) {
         setIsAuthenticated(true);
       } else {
         setIsAuthenticated(false);
       }
-    } catch (err) {
-      setError("Session check failed");
+    } catch {
       setIsAuthenticated(false);
     } finally {
       setLoading(false);
@@ -30,7 +29,6 @@ export function useSession() {
   const login = async (password) => {
     setLoading(true);
     setError(null);
-
     try {
       const res = await api.login(password);
       if (!res.ok) {
@@ -38,10 +36,9 @@ export function useSession() {
         setIsAuthenticated(false);
         return false;
       }
-
       setIsAuthenticated(true);
       return true;
-    } catch (err) {
+    } catch {
       setError("Login failed");
       return false;
     } finally {

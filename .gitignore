@@ -1,0 +1,7 @@
+.env
+.venv
+ARGUS*
+
+
+backend/__pycache__/
+
