@@ -6,13 +6,14 @@ Endpoints:
   POST /api/logout
   GET  /api/health                 — sanity check, shows live state counts
   POST /api/agent/investigate      — Splunk webhook target
+  POST /api/agent/reinvestigate/{alert_id} — UI re-run on existing alert
   GET  /api/alerts                 — list all received alerts (AlertFeed)
   GET  /api/incidents              — list all completed incident reports
   GET  /api/incidents/{id}         — get one incident report
   WS   /ws/incidents               — real-time agent step stream
 
 Run:
-  uvicorn main:app --reload --port 8000
+  uvicorn main:app --reload --port 8001
 """
 
 from __future__ import annotations
@@ -75,15 +76,14 @@ app.add_middleware(
 
 # ---------------------------------------------------------------------------
 # In-memory state
-# Phase 1: no database. Agent writes to these dicts in Phase 2.
 # ---------------------------------------------------------------------------
 
 DEMO_PASSWORD: str = os.environ.get("DEMO_PASSWORD", "argus2026")
 
-sessions:      dict[str, str]  = {}   # session_token → username
-pending_alerts: dict[str, dict] = {}  # alert_id → SplunkAlert.model_dump()
-incidents:     dict[str, dict]  = {}  # incident_id → IncidentReport dict
-ws_clients:    dict[str, WebSocket] = {}  # client_id → WebSocket
+sessions:       dict[str, str]      = {}  # session_token → username
+pending_alerts: dict[str, dict]     = {}  # alert_id → SplunkAlert.model_dump()
+incidents:      dict[str, dict]     = {}  # incident_id → IncidentReport dict
+ws_clients:     dict[str, WebSocket] = {}  # client_id → WebSocket
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +102,6 @@ def require_auth(session: str | None) -> str:
 
 # ---------------------------------------------------------------------------
 # WebSocket broadcast helper
-# Called by agent loop in Phase 2, and by webhook in Phase 1
 # ---------------------------------------------------------------------------
 
 async def broadcast(message: dict) -> None:
@@ -136,7 +135,6 @@ async def login(credentials: LoginRequest, response: Response) -> LoginResponse:
         value=token,
         httponly=True,
         samesite="strict",
-        # secure=True  ← enable in production behind HTTPS
     )
     log.info("Login successful — session %s…", token[:8])
     return LoginResponse(status="authenticated", username="analyst")
@@ -173,18 +171,10 @@ async def health() -> dict:
 def root():
     return {"status": "Argus backend running 🚀"}
 
+
 # ---------------------------------------------------------------------------
 # Splunk webhook — POST /api/agent/investigate
-#
-# Phase 1 behaviour:
-#   1. Parse payload
-#   2. Normalise into SplunkAlert
-#   3. Store in pending_alerts
-#   4. Broadcast new_alert event to WebSocket clients
-#   5. Return 200
-#
-# Phase 2 will add:
-#   background_tasks.add_task(run_agent, alert.alert_id)
+# This is called by Splunk (or your test curl). Always a new alert.
 # ---------------------------------------------------------------------------
 
 @app.post("/api/agent/investigate")
@@ -193,14 +183,9 @@ async def receive_alert(
     background_tasks: BackgroundTasks,
 ) -> dict:
     """
-    Splunk webhook target.
-
-    Splunk fires this when a saved search alert triggers.
-    Configure in Splunk: Settings → Searches → [alert] → Edit Alert Actions → Webhook
-    URL: http://<your-host>:8000/api/agent/investigate
+    Splunk webhook target. Called by Splunk when a saved search fires.
+    Every call = a new alert with a new alert_id.
     """
-
-    # Read raw bytes first — never lose data on parse failure
     raw: bytes = await request.body()
 
     try:
@@ -214,12 +199,6 @@ async def receive_alert(
 
     log.info("=== SPLUNK WEBHOOK RECEIVED ===")
     log.info(json.dumps(body, indent=2, default=str))
-
-    # Splunk webhook body structure:
-    #   body["result"]        — first matching event from the search
-    #   body["sid"]           — search job ID
-    #   body["search_name"]   — name of the saved search that fired
-    #   body["result_count"]  — number of matching events
 
     result: dict = body.get("result", {})
 
@@ -251,14 +230,13 @@ async def receive_alert(
         alert.alert_id, alert.search_name, alert.src_ip, alert.host,
     )
 
-    # Notify all connected frontend clients immediately
+    # Broadcast the new alert to the UI immediately
     await broadcast({
         "type":  "new_alert",
         "alert": alert.model_dump(),
     })
 
-    from agent import run_agent
-
+    # Run the agent in the background
     background_tasks.add_task(
         run_agent,
         alert.alert_id,
@@ -275,6 +253,45 @@ async def receive_alert(
 
 
 # ---------------------------------------------------------------------------
+# UI re-investigate — POST /api/agent/reinvestigate/{alert_id}
+# Called by the Investigate button in AlertFeed. No new alert created.
+# ---------------------------------------------------------------------------
+
+@app.post("/api/agent/reinvestigate/{alert_id}")
+async def reinvestigate(
+    alert_id: str,
+    background_tasks: BackgroundTasks,
+    session: str | None = Cookie(default=None),
+) -> dict:
+    """
+    Re-run the agent on an already-stored alert.
+    Does NOT create a new alert or broadcast new_alert.
+    Called by the UI Investigate button.
+    """
+    require_auth(session)
+    if alert_id not in pending_alerts:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Alert {alert_id} not found",
+        )
+
+    log.info("Re-investigating alert: %s", alert_id)
+    background_tasks.add_task(run_agent, alert_id, pending_alerts, incidents, broadcast)
+    return {"status": "queued", "alert_id": alert_id}
+
+
+@app.delete("/api/alerts/{alert_id}")
+async def delete_alert(
+    alert_id: str,
+    session: str | None = Cookie(default=None),
+) -> dict:
+    require_auth(session)
+    if alert_id not in pending_alerts:
+        raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
+    pending_alerts.pop(alert_id, None)
+    return {"status": "deleted", "alert_id": alert_id}
+
+# ---------------------------------------------------------------------------
 # Alerts & Incidents REST endpoints
 # ---------------------------------------------------------------------------
 
@@ -282,7 +299,6 @@ async def receive_alert(
 async def list_alerts(
     session: str | None = Cookie(default=None),
 ) -> dict:
-    """All pending alerts — feeds the AlertFeed component."""
     require_auth(session)
     return {
         "alerts": list(pending_alerts.values()),
@@ -294,7 +310,6 @@ async def list_alerts(
 async def list_incidents(
     session: str | None = Cookie(default=None),
 ) -> dict:
-    """All completed incident reports."""
     require_auth(session)
     return {
         "incidents": list(incidents.values()),
@@ -307,7 +322,6 @@ async def get_incident(
     incident_id: str,
     session: str | None = Cookie(default=None),
 ) -> dict:
-    """Single incident report by ID."""
     require_auth(session)
     report = incidents.get(incident_id)
     if not report:
@@ -320,17 +334,6 @@ async def get_incident(
 
 # ---------------------------------------------------------------------------
 # WebSocket — /ws/incidents
-#
-# Phase 1: connects, assigns a client ID, sends a ping, stays alive.
-# Phase 2: broadcast() is called by the agent loop after every step.
-#
-# Message types sent to clients:
-#   {"type": "ping"}
-#   {"type": "new_alert",  "alert": {...}}
-#   {"type": "plan",       "action": "...", "reasoning": "...", "iteration": N}
-#   {"type": "result",     "action": "...", "data": {...},      "iteration": N}
-#   {"type": "done",       "incident_id": "...", "report": {...}}
-#   {"type": "error",      "message": "..."}
 # ---------------------------------------------------------------------------
 
 @app.websocket("/ws/incidents")
@@ -345,12 +348,10 @@ async def ws_incidents(websocket: WebSocket) -> None:
         client_id, len(ws_clients),
     )
 
-    # Welcome ping so client confirms the connection is live
     await websocket.send_json({"type": "ping", "client_id": client_id})
 
     try:
         while True:
-            # Keep-alive: client sends "ping", we reply "pong"
             msg = await websocket.receive_text()
             if msg.strip() == "ping":
                 await websocket.send_json({"type": "pong"})
@@ -366,5 +367,5 @@ async def ws_incidents(websocket: WebSocket) -> None:
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("BACKEND_PORT", 8000))
+    port = int(os.environ.get("BACKEND_PORT", 8001))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)

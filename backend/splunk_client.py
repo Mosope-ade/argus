@@ -96,6 +96,9 @@ class SplunkClient:
 
         log.info("SPL → %s", spl)
 
+        if not spl.strip().lower().startswith("search"):
+            spl = "search " + spl
+        
         job = service.jobs.create(
             spl,
             exec_mode="normal",   # async job — we poll until done

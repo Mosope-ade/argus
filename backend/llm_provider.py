@@ -154,60 +154,77 @@ class LLMProvider(ABC):
     async def generate_report(self, state: dict) -> dict:
         """Returns a dict matching IncidentReport schema"""
 
-
 # ---------------------------------------------------------------------------
-# Ollama — local, free, no account (primary dev provider)
+# Gemini Provider
 # ---------------------------------------------------------------------------
 
-class OllamaProvider(LLMProvider):
-    """
-    Calls a local Ollama instance.
-
-    Setup:
-      ollama serve          # start the daemon
-      ollama pull llama3    # pull the model once
-
-    Env vars:
-      OLLAMA_HOST   default: http://localhost:11434
-      OLLAMA_MODEL  default: llama3
-    """
+class GeminiProvider(LLMProvider):
+    """Google Gemini via google-genai SDK (new)."""
 
     def __init__(self) -> None:
-        self.host  = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-        self.model = os.environ.get("OLLAMA_MODEL", "llama3")
+        from google import genai
+        from google.genai import types
+
+        self.api_key    = os.environ.get("GEMINI_API_KEY", "")
+        self.model_name = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+
+        if not self.api_key:
+            raise RuntimeError("GEMINI_API_KEY not set in environment")
+
+        self.client = genai.Client(api_key=self.api_key)
+        self.types  = types
+
+        log.info("LLM provider: Gemini (%s)", self.model_name)
 
     async def _call(self, system: str, user: str) -> str:
-        payload = {
-            "model":    self.model,
-            "messages": [
-                {"role": "system",  "content": system},
-                {"role": "user",    "content": user},
-            ],
-            "stream": False,
-            "format": "json",   # Ollama JSON mode — enforces valid JSON output
-        }
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(f"{self.host}/api/chat", json=payload)
-            resp.raise_for_status()
-            return resp.json()["message"]["content"]
+        import asyncio
+
+        config = self.types.GenerateContentConfig(
+            system_instruction=system,
+            response_mime_type="application/json",
+            temperature=0.2,
+            max_output_tokens=2048,
+        )
+
+        loop = asyncio.get_event_loop()
+
+        for attempt in range(3):
+            try:
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self.client.models.generate_content(
+                        model=self.model_name,
+                        contents=user,
+                        config=config,
+                    ),
+                )
+                content = response.text
+                if not content or not content.strip():
+                    raise RuntimeError("Gemini returned empty response")
+                return content.strip()
+
+            except Exception as exc:
+                msg = str(exc)
+                if "429" in msg or "quota" in msg.lower() or "rate" in msg.lower():
+                    import re
+                    wait = 35
+                    match = re.search(r"retry_delay\s*\{\s*seconds:\s*(\d+)", msg)
+                    if match:
+                        wait = int(match.group(1)) + 5
+                    if attempt < 2:
+                        log.warning("Gemini rate limited — waiting %ds", wait)
+                        await asyncio.sleep(wait)
+                        continue
+                raise
 
     async def plan_next_action(self, state: dict, available_actions: list[str]) -> dict:
-        user_msg = _PLANNER_USER.format(
-            state_json=json.dumps(state, default=str),
-            actions_taken=state.get("actions_taken", []),
-            available_actions=available_actions,
-        )
-        raw = await self._call(_PLANNER_SYSTEM, user_msg)
+        system, user = build_planner_prompt(state, available_actions)
+        raw = await self._call(system, user)
         return _parse_json(raw)
 
     async def generate_report(self, state: dict) -> dict:
-        user_msg = _REPORT_USER.format(
-            alert_json=json.dumps(state.get("alert", {}), default=str),
-            findings_json=json.dumps(state.get("findings", []), default=str),
-            actions_taken=state.get("actions_taken", []),
-            schema_json=json.dumps(_REPORT_SCHEMA, indent=2),
-        )
-        raw = await self._call(_REPORT_SYSTEM, user_msg)
+        system, user = build_report_prompt(state)
+        raw = await self._call(system, user)
         return _parse_json(raw)
 
 
@@ -236,17 +253,29 @@ class OpenAIProvider(LLMProvider):
         self.model  = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
     async def _call(self, system: str, user: str) -> str:
-        resp = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user",   "content": user},
+        payload = {
+            "model":    self.model,
+            "messages": [
+                {"role": "system",  "content": system},
+                {"role": "user",    "content": user},
             ],
-            max_tokens=1024,
-            temperature=0.0,
-            response_format={"type": "json_object"},  # enforce JSON mode
-        )
-        return resp.choices[0].message.content
+            "stream": False,
+            "format": "json",
+        }
+        async with httpx.AsyncClient(timeout=120) as client:
+            try:
+                resp = await client.post(f"{self.host}/api/chat", json=payload)
+                resp.raise_for_status()
+            except httpx.TimeoutException as exc:
+                raise RuntimeError(f"Ollama timed out after 120s — model may be too slow: {exc}") from exc
+            except httpx.HTTPStatusError as exc:
+                raise RuntimeError(f"Ollama HTTP error {exc.response.status_code}: {exc.response.text[:200]}") from exc
+
+            body = resp.json()
+            content = body.get("message", {}).get("content")
+            if not content:
+                raise RuntimeError(f"Ollama response missing message.content — got: {json.dumps(body)[:300]}")
+            return content
 
     async def plan_next_action(self, state: dict, available_actions: list[str]) -> dict:
         user_msg = _PLANNER_USER.format(
@@ -335,23 +364,10 @@ class SplunkLLMProvider(LLMProvider):
 # ---------------------------------------------------------------------------
 
 def get_llm_provider() -> LLMProvider:
-    """
-    Returns the configured LLM provider.
-    Reads LLM_PROVIDER env var. Defaults to ollama for local development.
-    """
-    provider = os.environ.get("LLM_PROVIDER", "ollama").lower()
+    provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
     match provider:
-        case "ollama":
-            log.info("LLM provider: Ollama (local)")
-            return OllamaProvider()
-        case "openai":
-            log.info("LLM provider: OpenAI")
-            return OpenAIProvider()
-        case "splunk":
-            log.info("LLM provider: Splunk hosted model")
-            return SplunkLLMProvider()
+        case "splunk":  return SplunkLLMProvider()
+        case "openai":  return OpenAIProvider()
+        case "gemini":  return GeminiProvider()
         case _:
-            raise ValueError(
-                f"Unknown LLM_PROVIDER='{provider}'. "
-                "Valid values: ollama | openai | splunk"
-            )
+            raise ValueError(f"Unknown LLM_PROVIDER: {provider!r}")

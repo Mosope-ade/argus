@@ -76,6 +76,7 @@ class ArgusAgent:
         incidents_store: dict, # shared dict to write the completed report into
     ) -> None:
         self.alert          = alert
+        self.alert_id       = alert.get("alert_id", "UNKNOWN")
         self.broadcast      = broadcast_fn
         self.incidents      = incidents_store
         self.llm: LLMProvider   = get_llm_provider()
@@ -241,6 +242,7 @@ class ArgusAgent:
         # Stream the done event with the full report
         await self.broadcast({
             "type":        "done",
+            "alert_id":    self.alert_id,
             "incident_id": incident_id,
             "report":      final_report,
         })
@@ -252,44 +254,42 @@ class ArgusAgent:
     # ------------------------------------------------------------------
 
     async def _plan(self, system: str, user: str) -> dict:
-        """
-        Call the LLM provider's planner.
-        Retries once if the first call returns a malformed response.
-        """
         from llm_provider import _parse_json
 
-        # Temporarily set prompts on the provider instance
-        # (providers read prompts from the formatted strings we pass)
         provider = self.llm
 
-        # Call plan_next_action with pre-formatted prompts via a small shim
         for attempt in range(2):
             try:
-                # We call the provider's internal _call method directly
-                # so we can use our pre-built prompts from prompts.py
                 if hasattr(provider, "_call"):
                     raw = await provider._call(system, user)
+                    if not raw or not raw.strip():
+                        raise ValueError("LLM returned empty response")
                     return _parse_json(raw)
                 else:
-                    # Fallback: use the provider's public API with a dummy state
-                    # (this path is taken if _call is not exposed)
-                    raise AttributeError("No _call method")
+                    raise AttributeError("LLM provider has no _call method")
             except Exception as exc:
                 if attempt == 0:
-                    log.warning("Planner attempt 1 failed (%s) — retrying", exc)
+                    log.warning(
+                        "Planner attempt 1 failed (%s: %s) — retrying",
+                        type(exc).__name__, exc,
+                    )
                     await asyncio.sleep(1)
                 else:
+                    log.error(
+                        "Planner failed after 2 attempts (%s: %s)",
+                        type(exc).__name__, exc,
+                        exc_info=True,
+                    )
                     raise
 
     async def _generate_report(self, system: str, user: str) -> dict:
-        """
-        Call the LLM provider's report generator with pre-built prompts.
-        """
         from llm_provider import _parse_json
 
         provider = self.llm
         if hasattr(provider, "_call"):
             raw = await provider._call(system, user)
+            if not raw or not raw.strip():
+                raise ValueError("LLM returned empty response for report generation")
             return _parse_json(raw)
         else:
             raise RuntimeError("LLM provider does not expose _call method")

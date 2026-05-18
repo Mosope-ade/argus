@@ -1,7 +1,8 @@
-.env
+*/.env*
 .venv
 ARGUS*
 
-
+backend/.env
 backend/__pycache__/
 
+frotend/node_modules/

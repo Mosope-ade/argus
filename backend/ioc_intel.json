@@ -1,5 +1,61 @@
 {
   "ips": {
+    "5.101.40.81": {
+      "type": "ip",
+      "threat": "SSH brute force source — invalid user attempts against BOTS v3 hosts",
+      "confidence": "HIGH",
+      "feeds": ["BOTSv3", "AbuseIPDB"],
+      "tags": ["brute-force", "ssh"]
+    },
+    "121.18.238.115": {
+      "type": "ip",
+      "threat": "SSH brute force source — repeated preauth disconnects",
+      "confidence": "HIGH",
+      "feeds": ["BOTSv3", "AbuseIPDB"],
+      "tags": ["brute-force", "ssh"]
+    },
+    "138.122.255.144": {
+      "type": "ip",
+      "threat": "SSH brute force source — invalid user attempts",
+      "confidence": "HIGH",
+      "feeds": ["BOTSv3"],
+      "tags": ["brute-force", "ssh"]
+    },
+    "50.115.191.161": {
+      "type": "ip",
+      "threat": "SSH brute force source — invalid user attempts",
+      "confidence": "HIGH",
+      "feeds": ["BOTSv3"],
+      "tags": ["brute-force", "ssh"]
+    },
+    "122.226.181.165": {
+      "type": "ip",
+      "threat": "SSH brute force source — preauth disconnects",
+      "confidence": "HIGH",
+      "feeds": ["BOTSv3"],
+      "tags": ["brute-force", "ssh"]
+    },
+    "91.207.175.249": {
+      "type": "ip",
+      "threat": "Suspicious SSH login — accepted publickey for ec2-user",
+      "confidence": "HIGH",
+      "feeds": ["BOTSv3"],
+      "tags": ["unauthorized-access", "ssh", "publickey"]
+    },
+    "14.177.138.15": {
+      "type": "ip",
+      "threat": "Possible break-in attempt — reverse DNS mismatch (static.vnpt.vn)",
+      "confidence": "MEDIUM",
+      "feeds": ["BOTSv3"],
+      "tags": ["break-in-attempt", "dns-mismatch"]
+    },
+    "173.212.237.88": {
+      "type": "ip",
+      "threat": "Possible break-in attempt — reverse DNS mismatch (nkweblab.com)",
+      "confidence": "MEDIUM",
+      "feeds": ["BOTSv3"],
+      "tags": ["break-in-attempt", "dns-mismatch"]
+    },
     "45.142.212.100": {
       "type": "ip",
       "threat": "Known C2 server — active botnet infrastructure",
@@ -13,95 +69,32 @@
       "confidence": "HIGH",
       "feeds": ["URLhaus"],
       "tags": ["malware", "dropper"]
-    },
-    "185.220.101.45": {
-      "type": "ip",
-      "threat": "Tor exit node — anonymization infrastructure",
-      "confidence": "MEDIUM",
-      "feeds": ["TorProject", "AbuseIPDB"],
-      "tags": ["tor", "anonymizer"]
-    },
-    "194.165.16.11": {
-      "type": "ip",
-      "threat": "Brute force attack source — credential stuffing campaigns",
-      "confidence": "HIGH",
-      "feeds": ["AbuseIPDB", "CINSscore"],
-      "tags": ["brute-force", "credential-stuffing"]
-    },
-    "91.92.109.196": {
-      "type": "ip",
-      "threat": "Known scanner — automated vulnerability scanning",
-      "confidence": "MEDIUM",
-      "feeds": ["Shodan", "AbuseIPDB"],
-      "tags": ["scanner"]
-    },
-    "198.199.120.147": {
-      "type": "ip",
-      "threat": "Exploit kit distribution server",
-      "confidence": "HIGH",
-      "feeds": ["EmergingThreats", "URLhaus"],
-      "tags": ["exploit-kit"]
-    },
-    "162.247.74.200": {
-      "type": "ip",
-      "threat": "Tor exit node",
-      "confidence": "MEDIUM",
-      "feeds": ["TorProject"],
-      "tags": ["tor"]
-    },
-    "80.82.77.139": {
-      "type": "ip",
-      "threat": "Mass scanner — Shodan crawler infrastructure",
-      "confidence": "LOW",
-      "feeds": ["Shodan"],
-      "tags": ["scanner"]
     }
   },
   "domains": {
+    "static.vnpt.vn": {
+      "type": "domain",
+      "threat": "Reverse DNS mismatch — associated with break-in attempt from 14.177.138.15",
+      "confidence": "MEDIUM",
+      "feeds": ["BOTSv3"],
+      "tags": ["dns-mismatch"]
+    },
+    "nkweblab.com": {
+      "type": "domain",
+      "threat": "Reverse DNS mismatch — associated with break-in attempt from 173.212.237.88",
+      "confidence": "MEDIUM",
+      "feeds": ["BOTSv3"],
+      "tags": ["dns-mismatch"]
+    },
     "poisonivy.attacker.ru": {
       "type": "domain",
       "threat": "RAT C2 infrastructure — Poison Ivy RAT",
       "confidence": "HIGH",
       "feeds": ["OpenPhish", "URLhaus"],
       "tags": ["c2", "rat"]
-    },
-    "update.windowsupdate-cdn.com": {
-      "type": "domain",
-      "threat": "Typosquat — impersonating Microsoft Windows Update",
-      "confidence": "HIGH",
-      "feeds": ["OpenPhish", "PhishTank"],
-      "tags": ["typosquat", "phishing"]
-    },
-    "cdn.freefile-download.net": {
-      "type": "domain",
-      "threat": "Malware dropper distribution",
-      "confidence": "HIGH",
-      "feeds": ["URLhaus"],
-      "tags": ["malware", "dropper"]
-    },
-    "secure-login.paypa1.com": {
-      "type": "domain",
-      "threat": "Phishing — credential harvesting, PayPal lure",
-      "confidence": "HIGH",
-      "feeds": ["PhishTank", "OpenPhish"],
-      "tags": ["phishing", "credential-harvesting"]
-    },
-    "c2.empire-framework.io": {
-      "type": "domain",
-      "threat": "PowerShell Empire C2 infrastructure",
-      "confidence": "HIGH",
-      "feeds": ["EmergingThreats"],
-      "tags": ["c2", "empire"]
     }
   },
   "hashes": {
-    "44d88612fea8a8f36de82e1278abb02f": {
-      "type": "hash",
-      "threat": "EICAR test file — used in detection testing",
-      "confidence": "LOW",
-      "feeds": ["VirusTotal"],
-      "tags": ["test"]
-    },
     "3395856ce81f2b7382dee72602f798b642f14d4": {
       "type": "hash",
       "threat": "Known ransomware dropper — Ryuk variant",
