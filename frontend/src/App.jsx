@@ -12,14 +12,18 @@ export default function App() {
   const { isAuthenticated, login, logout, loading, error } = useSession();
   const ws = useWebSocket();
 
-  // incident_id → report dict
   const [incidents, setIncidents] = useState({});
-  // The incident currently shown in the right panel
   const [activeIncidentId, setActiveIncidentId] = useState(null);
-
-  // Set of alert_ids currently being investigated
   const [investigatingAlerts, setInvestigatingAlerts] = useState(new Set());
   const isInvestigating = investigatingAlerts.size > 0;
+
+  // Request notification permission once on login
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }, [isAuthenticated]);
 
   // Load existing incidents on mount
   useEffect(() => {
@@ -60,15 +64,41 @@ export default function App() {
         next.delete(latest.alert_id);
         return next;
       });
+
+      // Browser push notification
+      if ("Notification" in window && Notification.permission === "granted") {
+        const severityEmoji = {
+          CRITICAL: "🔴",
+          HIGH:     "🟠",
+          MEDIUM:   "🟡",
+          LOW:      "🟢",
+        }[report.severity] ?? "⚪";
+
+        const n = new Notification(
+          `${severityEmoji} Argus — Investigation Complete`,
+          {
+            body: `${report.incident_id} · ${report.attack_type}\n${
+              report.recommendations?.[0] ?? "View report for details"
+            }`,
+            icon: "/favicon.ico",
+            tag:  report.incident_id,
+            requireInteraction: report.severity === "CRITICAL",
+          }
+        );
+
+        n.onclick = () => {
+          window.focus();
+          setActiveIncidentId(report.incident_id);
+          n.close();
+        };
+      }
     }
 
     if (latest.type === "error") {
-      // Clear all in-progress alerts on error since we don't know which one failed
       setInvestigatingAlerts(new Set());
     }
   }, [ws.lastMessage]);
 
-  // Agent steps scoped to the active incident's alert
   const activeIncident = activeIncidentId ? incidents[activeIncidentId] : null;
 
   const agentSteps = useMemo(() => {
@@ -104,8 +134,8 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-4">
-          <div className="text-sm font-mono text-[#00ff9d]">
-            ● Monitoring Active
+          <div className={`text-sm font-mono ${ws.status === "connected" ? "text-[#00ff9d]" : "text-[#ff3c5a]"}`}>
+            ● {ws.status === "connected" ? "Monitoring Active" : "Disconnected"}
           </div>
           <div className="text-xs font-mono text-[#4a6080]">
             WS: {ws.status}
@@ -153,7 +183,7 @@ export default function App() {
                 {isInvestigating && (
                   <div className="mt-6 text-left max-w-sm">
                     {agentSteps.slice(-3).map((step, i) => (
-                      <div key={i} className="text-[#4a6080] font-mono text-xs mb-1">
+                      <div key={`${step.type}-${step.action || step.summary || step.message || i}`} className="text-[#4a6080] font-mono text-xs mb-1">
                         {step.type === "plan" && (
                           <span>
                             <span className="text-[#00d4ff]">&gt; </span>

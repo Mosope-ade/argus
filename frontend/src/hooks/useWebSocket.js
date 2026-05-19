@@ -45,7 +45,7 @@ export function useWebSocket() {
         data = event.data;
       }
       if (data?.type === "pong") return; // ignore keepalive replies
-      setMessages((prev) => [...prev, data]);
+      setMessages((prev) => [...prev.slice(-499), data]);
       setLastMessage(data);
     };
 

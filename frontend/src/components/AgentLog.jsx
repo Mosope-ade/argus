@@ -37,23 +37,24 @@ export default function AgentLog({ steps = [] }) {
       )}
 
       {steps.map((step, i) => {
+        const key = `${step.type}-${step.iteration ?? step.action ?? step.summary ?? step.message ?? i}`;
         if (step.type === "plan") {
           return (
-            <div key={i} className="text-[#00d4ff] mb-1 leading-relaxed">
+            <div key={key} className="text-[#00d4ff] mb-1 leading-relaxed">
               {formatPlan(step)}
             </div>
           );
         }
         if (step.type === "result") {
           return (
-            <div key={i} className="text-[#00ff9d] mb-1 leading-relaxed">
+            <div key={key} className="text-[#00ff9d] mb-1 leading-relaxed">
               {formatResult(step)}
             </div>
           );
         }
         if (step.type === "error") {
           return (
-            <div key={i} className="text-[#ff3c5a] mb-1 leading-relaxed">
+            <div key={key} className="text-[#ff3c5a] mb-1 leading-relaxed">
               {"> error: " + step.message}
             </div>
           );
