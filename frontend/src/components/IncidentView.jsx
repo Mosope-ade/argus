@@ -1,4 +1,3 @@
-import { jsPDF } from "jspdf";
 import AttackTimeline from "./AttackTimeline";
 import AgentLog from "./AgentLog";
 import RecommendationsPanel from "./RecommendationsPanel";
@@ -7,7 +6,8 @@ import SeverityBadge from "./SeverityBadge";
 const sanitize = (str) =>
   (str || "").replace(/→/g, "->").replace(/[^\x00-\x7F]/g, "?");
 
-function exportPDF(incident) {
+async function exportPDF(incident) {
+  const { jsPDF } = await import("jspdf");
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const W = doc.internal.pageSize.getWidth();
   const margin = 48;
@@ -281,7 +281,7 @@ export default function IncidentView({ incident, agentSteps = [] }) {
 
           {/* Export button */}
           <button
-            onClick={() => exportPDF(incident)}
+            onClick={() => exportPDF(incident).catch(console.error)}
             className="flex items-center gap-2 px-4 py-2 border border-[#1a2535] text-[#00d4ff] font-mono text-sm hover:border-[#00d4ff] hover:bg-[#00d4ff10] transition-colors"
           >
             <svg

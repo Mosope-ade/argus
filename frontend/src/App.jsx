@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { api } from "./api/argus";
 import { useSession } from "./hooks/useSession";
 import { useWebSocket } from "./hooks/useWebSocket";
 
@@ -16,16 +17,16 @@ export default function App() {
   // The incident currently shown in the right panel
   const [activeIncidentId, setActiveIncidentId] = useState(null);
 
-  const [isInvestigating, setIsInvestigating] = useState(false);
+  // Set of alert_ids currently being investigated
+  const [investigatingAlerts, setInvestigatingAlerts] = useState(new Set());
+  const isInvestigating = investigatingAlerts.size > 0;
 
   // Load existing incidents on mount
   useEffect(() => {
     if (!isAuthenticated) return;
     const load = async () => {
       try {
-        const res = await fetch("http://localhost:8001/api/incidents", {
-          credentials: "include",
-        });
+        const res = await api.getIncidents();
         const data = await res.json();
         const map = {};
         for (const inc of data.incidents || []) {
@@ -46,19 +47,24 @@ export default function App() {
     const latest = ws.lastMessage;
     if (!latest) return;
 
-    if (latest.type === "new_alert") {
-      setIsInvestigating(true);
+    if (latest.type === "new_alert" && latest.alert?.alert_id) {
+      setInvestigatingAlerts((prev) => new Set([...prev, latest.alert.alert_id]));
     }
 
     if (latest.type === "done" && latest.report) {
       const report = latest.report;
       setIncidents((prev) => ({ ...prev, [report.incident_id]: report }));
       setActiveIncidentId((prev) => prev ?? report.incident_id);
-      setIsInvestigating(false);
+      setInvestigatingAlerts((prev) => {
+        const next = new Set(prev);
+        next.delete(latest.alert_id);
+        return next;
+      });
     }
 
     if (latest.type === "error") {
-      setIsInvestigating(false);
+      // Clear all in-progress alerts on error since we don't know which one failed
+      setInvestigatingAlerts(new Set());
     }
   }, [ws.lastMessage]);
 
@@ -66,14 +72,13 @@ export default function App() {
   const activeIncident = activeIncidentId ? incidents[activeIncidentId] : null;
 
   const agentSteps = useMemo(() => {
+    const relevant = (m) =>
+      m.type === "plan" || m.type === "result" || m.type === "error" || m.type === "done";
+    if (!activeIncident) return ws.messages.filter(relevant);
     return ws.messages.filter(
-      (m) =>
-        m.type === "plan" ||
-        m.type === "result" ||
-        m.type === "error" ||
-        m.type === "done"
+      (m) => relevant(m) && (!m.alert_id || m.alert_id === activeIncident.alert_id)
     );
-  }, [ws.messages]);
+  }, [ws.messages, activeIncident]);
 
   if (loading) {
     return (

@@ -21,7 +21,8 @@ export function useWebSocket() {
     if (!mountedRef.current) return;
     setStatus("connecting");
 
-    const ws = new WebSocket("ws://localhost:8001/ws/incidents");
+    const wsBase = import.meta.env.VITE_WS_URL || "ws://localhost:8001";
+    const ws = new WebSocket(`${wsBase}/ws/incidents`);
     wsRef.current = ws;
 
     ws.onopen = () => {

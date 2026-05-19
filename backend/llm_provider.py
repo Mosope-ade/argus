@@ -1,14 +1,10 @@
 """
 llm_provider.py — LLM abstraction layer.
 
-Set LLM_PROVIDER env var to switch providers with zero code changes:
-  ollama  — local, free, no account needed (use this during development)
+Set LLM_PROVIDER env var to switch providers:
+  gemini  — needs GEMINI_API_KEY (default)
   openai  — needs OPENAI_API_KEY
   splunk  — needs SPLUNK_LLM_ENDPOINT + SPLUNK_TOKEN
-
-All providers expose:
-  plan_next_action(state, available_actions) → {"action": str, "reasoning": str}
-  generate_report(state)                     → dict matching IncidentReport schema
 """
 
 from __future__ import annotations
@@ -23,8 +19,7 @@ import httpx
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Prompt templates (will be replaced by prompts.py in Phase 2,
-# but fully functional here so Phase 1 testing works)
+# Prompt templates (used by OpenAI and Splunk providers)
 # ---------------------------------------------------------------------------
 
 _PLANNER_SYSTEM = (
@@ -122,14 +117,10 @@ _REPORT_SCHEMA = {
 # ---------------------------------------------------------------------------
 
 def _parse_json(text: str) -> dict:
-    """
-    Strip markdown fences if present, then parse JSON.
-    Raises ValueError with a useful message on failure.
-    """
+    """Strip markdown fences if present, then parse JSON."""
     text = text.strip()
     if text.startswith("```"):
         lines = text.splitlines()
-        # Drop first line (```json or ```) and last line (```)
         inner = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
         text = "\n".join(inner)
     try:
@@ -139,27 +130,22 @@ def _parse_json(text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Abstract base
+# Abstract base — all providers expose a single _call method
 # ---------------------------------------------------------------------------
 
 class LLMProvider(ABC):
 
     @abstractmethod
-    async def plan_next_action(
-        self, state: dict, available_actions: list[str]
-    ) -> dict:
-        """Returns {"action": str, "reasoning": str}"""
+    async def _call(self, system: str, user: str) -> str:
+        """Send a system+user prompt pair and return the raw text response."""
 
-    @abstractmethod
-    async def generate_report(self, state: dict) -> dict:
-        """Returns a dict matching IncidentReport schema"""
 
 # ---------------------------------------------------------------------------
 # Gemini Provider
 # ---------------------------------------------------------------------------
 
 class GeminiProvider(LLMProvider):
-    """Google Gemini via google-genai SDK (new)."""
+    """Google Gemini via google-genai SDK."""
 
     def __init__(self) -> None:
         from google import genai
@@ -178,6 +164,7 @@ class GeminiProvider(LLMProvider):
 
     async def _call(self, system: str, user: str) -> str:
         import asyncio
+        import functools
 
         config = self.types.GenerateContentConfig(
             system_instruction=system,
@@ -186,17 +173,15 @@ class GeminiProvider(LLMProvider):
             max_output_tokens=2048,
         )
 
-        loop = asyncio.get_event_loop()
-
         for attempt in range(3):
             try:
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: self.client.models.generate_content(
+                response = await asyncio.to_thread(
+                    functools.partial(
+                        self.client.models.generate_content,
                         model=self.model_name,
                         contents=user,
                         config=config,
-                    ),
+                    )
                 )
                 content = response.text
                 if not content or not content.strip():
@@ -217,24 +202,14 @@ class GeminiProvider(LLMProvider):
                         continue
                 raise
 
-    async def plan_next_action(self, state: dict, available_actions: list[str]) -> dict:
-        system, user = build_planner_prompt(state, available_actions)
-        raw = await self._call(system, user)
-        return _parse_json(raw)
-
-    async def generate_report(self, state: dict) -> dict:
-        system, user = build_report_prompt(state)
-        raw = await self._call(system, user)
-        return _parse_json(raw)
-
 
 # ---------------------------------------------------------------------------
-# OpenAI — fallback
+# OpenAI Provider
 # ---------------------------------------------------------------------------
 
 class OpenAIProvider(LLMProvider):
     """
-    Uses OpenAI Chat Completions API with JSON mode enabled.
+    OpenAI Chat Completions API with JSON mode.
 
     Env vars:
       OPENAI_API_KEY  (required)
@@ -251,54 +226,27 @@ class OpenAIProvider(LLMProvider):
 
         self.client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
         self.model  = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+        log.info("LLM provider: OpenAI (%s)", self.model)
 
     async def _call(self, system: str, user: str) -> str:
-        payload = {
-            "model":    self.model,
-            "messages": [
-                {"role": "system",  "content": system},
-                {"role": "user",    "content": user},
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": user},
             ],
-            "stream": False,
-            "format": "json",
-        }
-        async with httpx.AsyncClient(timeout=120) as client:
-            try:
-                resp = await client.post(f"{self.host}/api/chat", json=payload)
-                resp.raise_for_status()
-            except httpx.TimeoutException as exc:
-                raise RuntimeError(f"Ollama timed out after 120s — model may be too slow: {exc}") from exc
-            except httpx.HTTPStatusError as exc:
-                raise RuntimeError(f"Ollama HTTP error {exc.response.status_code}: {exc.response.text[:200]}") from exc
-
-            body = resp.json()
-            content = body.get("message", {}).get("content")
-            if not content:
-                raise RuntimeError(f"Ollama response missing message.content — got: {json.dumps(body)[:300]}")
-            return content
-
-    async def plan_next_action(self, state: dict, available_actions: list[str]) -> dict:
-        user_msg = _PLANNER_USER.format(
-            state_json=json.dumps(state, default=str),
-            actions_taken=state.get("actions_taken", []),
-            available_actions=available_actions,
+            response_format={"type": "json_object"},
+            temperature=0.2,
+            max_tokens=2048,
         )
-        raw = await self._call(_PLANNER_SYSTEM, user_msg)
-        return _parse_json(raw)
-
-    async def generate_report(self, state: dict) -> dict:
-        user_msg = _REPORT_USER.format(
-            alert_json=json.dumps(state.get("alert", {}), default=str),
-            findings_json=json.dumps(state.get("findings", []), default=str),
-            actions_taken=state.get("actions_taken", []),
-            schema_json=json.dumps(_REPORT_SCHEMA, indent=2),
-        )
-        raw = await self._call(_REPORT_SYSTEM, user_msg)
-        return _parse_json(raw)
+        content = response.choices[0].message.content
+        if not content or not content.strip():
+            raise RuntimeError("OpenAI returned empty response")
+        return content.strip()
 
 
 # ---------------------------------------------------------------------------
-# Splunk hosted model — primary target for submission
+# Splunk hosted model
 # ---------------------------------------------------------------------------
 
 class SplunkLLMProvider(LLMProvider):
@@ -309,16 +257,17 @@ class SplunkLLMProvider(LLMProvider):
       SPLUNK_LLM_ENDPOINT  (required)
       SPLUNK_LLM_MODEL     (required)
       SPLUNK_TOKEN         (reuses the REST API token)
-
-    NOTE: Splunk's AI API format may differ from the OpenAI-compatible
-    shape used here. If it does, update _call() only — nothing else changes.
-    Fall back to OllamaProvider or OpenAIProvider if the endpoint is broken.
+      SPLUNK_VERIFY_SSL    set to "false" to disable TLS verification (dev only)
     """
 
     def __init__(self) -> None:
-        self.endpoint = os.environ["SPLUNK_LLM_ENDPOINT"]
-        self.model    = os.environ["SPLUNK_LLM_MODEL"]
-        self.token    = os.environ["SPLUNK_TOKEN"]
+        self.endpoint   = os.environ["SPLUNK_LLM_ENDPOINT"]
+        self.model      = os.environ["SPLUNK_LLM_MODEL"]
+        self.token      = os.environ["SPLUNK_TOKEN"]
+        self.verify_ssl = os.environ.get("SPLUNK_VERIFY_SSL", "true").lower() != "false"
+        if not self.verify_ssl:
+            log.warning("SPLUNK_VERIFY_SSL=false — TLS verification disabled (dev only)")
+        log.info("LLM provider: Splunk (%s)", self.model)
 
     async def _call(self, system: str, user: str) -> str:
         payload = {
@@ -334,33 +283,14 @@ class SplunkLLMProvider(LLMProvider):
             "Authorization": f"Bearer {self.token}",
             "Content-Type":  "application/json",
         }
-        async with httpx.AsyncClient(verify=False, timeout=30) as client:
+        async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
             resp = await client.post(self.endpoint, json=payload, headers=headers)
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
 
-    async def plan_next_action(self, state: dict, available_actions: list[str]) -> dict:
-        user_msg = _PLANNER_USER.format(
-            state_json=json.dumps(state, default=str),
-            actions_taken=state.get("actions_taken", []),
-            available_actions=available_actions,
-        )
-        raw = await self._call(_PLANNER_SYSTEM, user_msg)
-        return _parse_json(raw)
-
-    async def generate_report(self, state: dict) -> dict:
-        user_msg = _REPORT_USER.format(
-            alert_json=json.dumps(state.get("alert", {}), default=str),
-            findings_json=json.dumps(state.get("findings", []), default=str),
-            actions_taken=state.get("actions_taken", []),
-            schema_json=json.dumps(_REPORT_SCHEMA, indent=2),
-        )
-        raw = await self._call(_REPORT_SYSTEM, user_msg)
-        return _parse_json(raw)
-
 
 # ---------------------------------------------------------------------------
-# Factory — the only import the rest of the app needs
+# Factory
 # ---------------------------------------------------------------------------
 
 def get_llm_provider() -> LLMProvider:
@@ -370,4 +300,6 @@ def get_llm_provider() -> LLMProvider:
         case "openai":  return OpenAIProvider()
         case "gemini":  return GeminiProvider()
         case _:
-            raise ValueError(f"Unknown LLM_PROVIDER: {provider!r}")
+            raise ValueError(
+                f"Unknown LLM_PROVIDER: {provider!r}. Valid values: gemini, openai, splunk"
+            )

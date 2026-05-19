@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { api } from "../api/argus";
 
 function relativeTime(timestamp) {
-  const diff = Math.floor((Date.now() - new Date(timestamp)) / 1000);
+  const diff = Math.max(0, Math.floor((Date.now() - new Date(timestamp)) / 1000));
   if (diff < 60) return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   return `${Math.floor(diff / 3600)}h ago`;
@@ -40,9 +41,7 @@ export default function AlertFeed({
 
     const loadAlerts = async () => {
       try {
-        const res = await fetch("http://localhost:8001/api/alerts", {
-          credentials: "include",
-        });
+        const res = await api.getAlerts();
         if (res.status === 401) return;
         const data = await res.json();
         const fetched = data.alerts || [];
@@ -123,12 +122,8 @@ export default function AlertFeed({
   };
 
   const removeAlert = async (alertId) => {
-    // Delete from backend so it doesn't come back on refresh
     try {
-      await fetch(`http://localhost:8001/api/alerts/${alertId}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
+      await api.deleteAlert(alertId);
     } catch (err) {
       console.error("Failed to delete alert from backend:", err);
     }

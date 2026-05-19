@@ -30,7 +30,7 @@ import os
 import uuid
 from datetime import datetime
 
-from llm_provider import get_llm_provider, LLMProvider
+from llm_provider import get_llm_provider, LLMProvider, _parse_json
 from models import AgentStep, IncidentReport
 from prompts import build_planner_prompt, build_reporter_prompt
 from splunk_client import SplunkClient
@@ -254,8 +254,6 @@ class ArgusAgent:
     # ------------------------------------------------------------------
 
     async def _plan(self, system: str, user: str) -> dict:
-        from llm_provider import _parse_json
-
         provider = self.llm
 
         for attempt in range(2):
@@ -283,8 +281,6 @@ class ArgusAgent:
                     raise
 
     async def _generate_report(self, system: str, user: str) -> dict:
-        from llm_provider import _parse_json
-
         provider = self.llm
         if hasattr(provider, "_call"):
             raw = await provider._call(system, user)
@@ -303,6 +299,7 @@ class ArgusAgent:
     ) -> None:
         await self.broadcast({
             "type":      "plan",
+            "alert_id":  self.alert_id,
             "action":    action,
             "reasoning": reasoning,
             "iteration": iteration,
@@ -314,6 +311,7 @@ class ArgusAgent:
     ) -> None:
         await self.broadcast({
             "type":      "result",
+            "alert_id":  self.alert_id,
             "action":    action,
             "data":      data,
             "iteration": iteration,

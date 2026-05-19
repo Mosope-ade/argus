@@ -27,11 +27,8 @@ from __future__ import annotations
 
 MITRE_MAP: dict[str, tuple[str, str, str]] = {
     # Credential Access
-    
     "input_userauth_request": ("T1110.001", "Brute Force: Password Guessing",        "Credential Access"),
     "possible break-in":      ("T1110",     "Brute Force",                            "Credential Access"),
-    "accepted publickey":     ("T1078",     "Valid Accounts",                         "Defense Evasion"),
-    
     "failed password":        ("T1110.001", "Brute Force: Password Guessing",        "Credential Access"),
     "authentication failure":  ("T1110.001", "Brute Force: Password Guessing",        "Credential Access"),
     "invalid user":           ("T1110.001", "Brute Force: Password Guessing",        "Credential Access"),

@@ -52,12 +52,23 @@ _IOC_INTEL: dict = _load_ioc_intel()
 # Helpers
 # ---------------------------------------------------------------------------
 
+_VALID_IP_RE = re.compile(
+    r'^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$'
+)
+
+def _validate_ip(ip: str) -> str:
+    """Return ip if it is a valid IPv4 address, else empty string."""
+    if ip and _VALID_IP_RE.match(str(ip).strip()):
+        return str(ip).strip()
+    return ""
+
 def _get_src_ip(state: dict) -> str:
-    return (
+    raw = (
         state.get("alert", {}).get("src_ip")
         or state.get("alert", {}).get("raw_result", {}).get("src_ip")
         or ""
     )
+    return _validate_ip(raw)
 
 def _get_host(state: dict) -> str:
     return (

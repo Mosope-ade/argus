@@ -78,7 +78,15 @@ app.add_middleware(
 # In-memory state
 # ---------------------------------------------------------------------------
 
-DEMO_PASSWORD: str = os.environ.get("DEMO_PASSWORD", "argus2026")
+DEMO_PASSWORD:   str       = os.environ.get("DEMO_PASSWORD", "argus2026")
+WEBHOOK_SECRET:  str | None = os.environ.get("WEBHOOK_SECRET")
+SECURE_COOKIES:  bool       = os.environ.get("SECURE_COOKIES", "false").lower() == "true"
+
+if not WEBHOOK_SECRET:
+    log.warning(
+        "WEBHOOK_SECRET not set — /api/agent/investigate is unauthenticated. "
+        "Set WEBHOOK_SECRET in .env for production."
+    )
 
 sessions:       dict[str, str]      = {}  # session_token → username
 pending_alerts: dict[str, dict]     = {}  # alert_id → SplunkAlert.model_dump()
@@ -135,6 +143,7 @@ async def login(credentials: LoginRequest, response: Response) -> LoginResponse:
         value=token,
         httponly=True,
         samesite="strict",
+        secure=SECURE_COOKIES,
     )
     log.info("Login successful — session %s…", token[:8])
     return LoginResponse(status="authenticated", username="analyst")
@@ -186,6 +195,14 @@ async def receive_alert(
     Splunk webhook target. Called by Splunk when a saved search fires.
     Every call = a new alert with a new alert_id.
     """
+    if WEBHOOK_SECRET:
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer ") or auth[7:] != WEBHOOK_SECRET:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or missing webhook secret",
+            )
+
     raw: bytes = await request.body()
 
     try:
