@@ -1,4 +1,3 @@
-# Environment variables (never commit secrets)
 .env
 .env.*
 *.env
@@ -9,9 +8,8 @@ __pycache__/
 *.py[cod]
 *.pyo
 .venv/
-venv/
+
 env/
-*.egg-info/
 dist/
 build/
 .pytest_cache/
@@ -21,30 +19,8 @@ htmlcov/
 .coverage
 coverage.xml
 
-# Node / frontend
 node_modules/
 dist/
 build/
 .vite/
 *.local
-
-# Logs
-*.log
-logs/
-
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# IDEs
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Project docs/planning (keep out of repo)
-ARGUS*.md
-architecture.html
-architecture.png
