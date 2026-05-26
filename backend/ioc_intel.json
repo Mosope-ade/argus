@@ -92,6 +92,41 @@
       "confidence": "HIGH",
       "feeds": ["OpenPhish", "URLhaus"],
       "tags": ["c2", "rat"]
+    },
+    "coinhive.com": {
+      "type": "domain",
+     "threat": "Cryptomining pool — Coinhive browser-based XMR miner",
+      "confidence": "HIGH",
+      "feeds": ["BOTSv3", "URLhaus"],
+      "tags": ["cryptomining", "coinhive"]
+    },
+    "ws001.coinhive.com": {
+      "type": "domain",
+      "threat": "Coinhive WebSocket mining endpoint",
+      "confidence": "HIGH",
+      "feeds": ["BOTSv3"],
+      "tags": ["cryptomining", "coinhive"]
+    },
+    "ws005.coinhive.com": {
+      "type": "domain",
+      "threat": "Coinhive WebSocket mining endpoint",
+      "confidence": "HIGH",
+      "feeds": ["BOTSv3"],
+      "tags": ["cryptomining", "coinhive"]
+    },
+    "ws011.coinhive.com": {
+      "type": "domain",
+      "threat": "Coinhive WebSocket mining endpoint",
+      "confidence": "HIGH",
+      "feeds": ["BOTSv3"],
+      "tags": ["cryptomining", "coinhive"]
+    },
+    "ws014.coinhive.com": {
+      "type": "domain",
+      "threat": "Coinhive WebSocket mining endpoint",
+      "confidence": "HIGH",
+      "feeds": ["BOTSv3"],
+      "tags": ["cryptomining", "coinhive"]
     }
   },
   "hashes": {

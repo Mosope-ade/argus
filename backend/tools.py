@@ -1,23 +1,3 @@
-"""
-tools.py — All 8 agent tool implementations.
-
-Every tool:
-  - Is async
-  - Takes the current investigation state dict + a SplunkClient instance
-  - Returns a dict of findings appended to state["findings"]
-  - Is read-only — no write operations anywhere
-
-BOTS v3 confirmed field structure:
-  - linux_secure has NO src_ip field — IP is inside _raw only
-  - Brute force string: "Invalid user" or "input_userauth_request: invalid user"
-  - Successful login string: "Accepted publickey" (not "Accepted password")
-  - Hosts: gacrux.i-0920036c8ca91e501, mars.i-08e52f8b5a034012d
-  - _time: ISO format 2018-08-20T16:13:47.000+0100
-  - osquery:results has command execution data
-  - stream:tcp / aws:cloudwatchlogs:vpcflow has network flow data
-  - All queries use earliest=0 (data is from 2018)
-"""
-
 from __future__ import annotations
 
 import json
@@ -138,7 +118,7 @@ async def fetch_alert_data(state: dict, client: SplunkClient) -> dict:
     index     = client.index
 
     # Try SID first — skip test SIDs
-    if search_id and search_id not in ("test-001", "test-002", ""):
+    if search_id and search_id not in ("test-001", "test-002", "test-003", ""):
         events = await client.fetch_alert_events(search_id, max_results=50)
         if events:
             log.info("[%s] Fetched %d events from SID %s", tool_name, len(events), search_id)
@@ -612,6 +592,11 @@ async def correlate_ioc(state: dict, client: SplunkClient) -> dict:
             if val and not _is_private(val):
                 candidates.add(val)
 
+        # Cryptomining domains
+        for domain in finding.get("mining_domains", []):
+            if domain:
+                candidates.add(domain)
+
     # Lookup every candidate
     matches: list[dict] = []
     checked: list[str]  = list(candidates)
@@ -846,6 +831,34 @@ async def build_timeline(state: dict, client: SplunkClient) -> dict:
                     "_sort_key":       "",
                 })
 
+        # Cryptomining DNS lookups
+        if finding.get("tool") == "check_cryptomining" and finding.get("mining_domains"):
+            for domain in finding.get("mining_domains", [])[:3]:
+                events.append({
+                    "time":            "",
+                    "event":           f"Cryptomining DNS lookup detected: {domain}",
+                    "raw_log":         f"domain={domain} type=dns sourcetype=stream:dns",
+                    "mitre_tactic":    "Impact",
+                    "mitre_technique": "T1496 — Resource Hijacking",
+                    "source":          "stream:dns",
+                    "_sort_key":       "",
+                })
+
+        # Dynamic LLM-generated SPL results
+        if finding.get("tool") == "run_spl":
+            for ev in finding.get("events", [])[:5]:
+                raw   = ev.get("_raw", "")
+                mitre = map_event(raw)
+                events.append({
+                    "time":            _fmt_time(ev.get("_time", "")),
+                    "event":           f"Event found via custom query: {raw[:120]}",
+                    "raw_log":         raw[:300],
+                    "mitre_tactic":    mitre[2] if mitre else "Unknown",
+                    "mitre_technique": f"{mitre[0]} — {mitre[1]}" if mitre else "",
+                    "source":          ev.get("sourcetype", "unknown"),
+                    "_sort_key":       ev.get("_time", ""),
+                })
+
         # IOC matches
         if finding.get("tool") == "correlate_ioc":
             for match in finding.get("matches", []):
@@ -881,6 +894,134 @@ async def build_timeline(state: dict, client: SplunkClient) -> dict:
         "event_count":   len(events),
     }
 
+# ---------------------------------------------------------------------------
+# Tool: discover_schema
+# ---------------------------------------------------------------------------
+
+async def discover_schema(state: dict, client: SplunkClient) -> dict:
+    """
+    Query available sourcetypes in the target index.
+    Runs automatically before the planner loop so the LLM knows what
+    data sources exist before it decides what to query.
+    """
+    index = client.index
+    spl = (
+        f'search index={index} earliest=0 '
+        f'| stats count by sourcetype | sort -count | head 25'
+    )
+    rows = await client.search(spl, max_results=25)
+    sourcetypes = [r.get("sourcetype", "") for r in rows if r.get("sourcetype")]
+
+    log.info("[discover_schema] %d sourcetypes found in index=%s: %s", len(sourcetypes), index, sourcetypes)
+    return {
+        "tool":        "discover_schema",
+        "index":       index,
+        "sourcetypes": sourcetypes,
+        "count":       len(sourcetypes),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tool: run_spl  (LLM-generated dynamic query)
+# ---------------------------------------------------------------------------
+
+# Commands that write, export, or execute on the Splunk server — never allowed
+_SPL_WRITE_RE = re.compile(
+    r'\b(delete|collect|outputlookup|sendemail|script|runshellscript|export|'
+    r'outputcsv|savedsearch|pivot)\b',
+    re.IGNORECASE,
+)
+
+async def run_spl(state: dict, client: SplunkClient) -> dict:
+    """
+    Execute an LLM-generated SPL query. The agent loop stores the query
+    in state["pending_spl"] before dispatching this tool.
+    Write/export commands are rejected to keep Argus strictly read-only.
+    """
+    spl = state.get("pending_spl", "").strip()
+
+    if not spl:
+        log.warning("[run_spl] Called with no pending_spl in state")
+        return {"tool": "run_spl", "error": "no_spl_provided", "events": [], "count": 0}
+
+    if _SPL_WRITE_RE.search(spl):
+        log.warning("[run_spl] Rejected unsafe SPL: %s", spl[:200])
+        return {"tool": "run_spl", "error": "spl_rejected_unsafe", "events": [], "count": 0}
+
+    log.info("[run_spl] Executing LLM-generated query")
+    events = await client.search(spl, max_results=50)
+
+    return {
+        "tool":   "run_spl",
+        "spl":    spl,
+        "events": events,
+        "count":  len(events),
+    }
+
+
+async def check_cryptomining(state: dict, client: SplunkClient) -> dict:
+    """Detect cryptomining activity — DNS lookups for known mining pools."""
+    host   = _get_host(state)
+    src_ip = _get_src_ip(state)
+    index  = client.index
+
+    findings: dict = {
+        "tool":           "check_cryptomining",
+        "mining_domains": [],
+        "affected_hosts": [],
+        "event_count":    0,
+    }
+
+    def _absorb(rows: list[dict]) -> None:
+        findings["event_count"] += len(rows)
+        for r in rows:
+            q = r.get("query", "")
+            h = r.get("host", "")
+            if q and q not in findings["mining_domains"]:
+                findings["mining_domains"].append(q)
+            if h and h not in findings["affected_hosts"]:
+                findings["affected_hosts"].append(h)
+
+    # Query 1 — DNS lookups for coinhive domains by host
+    if host:
+        spl = (
+            f'search index={index} sourcetype="stream:dns" coinhive '
+            f'host="{host}" earliest=0 | head 20'
+        )
+        _absorb(await client.search(spl, max_results=20))
+
+    # Query 2 — DNS lookups by src_ip
+    if src_ip:
+        spl = (
+            f'search index={index} sourcetype="stream:dns" coinhive '
+            f'src_ip="{src_ip}" earliest=0 | head 20'
+        )
+        _absorb(await client.search(spl, max_results=20))
+
+    # Query 3 — broad search if nothing found yet
+    if findings["event_count"] == 0:
+        spl = (
+            f'search index={index} sourcetype="stream:dns" coinhive '
+            f'earliest=0 | head 20'
+        )
+        _absorb(await client.search(spl, max_results=20))
+
+    if findings["mining_domains"]:
+        log.info(
+            "[check_cryptomining] Found %d mining DNS events, domains: %s, hosts: %s",
+            findings["event_count"],
+            findings["mining_domains"],
+            findings["affected_hosts"],
+        )
+        findings["summary"] = (
+            f"Cryptomining detected — {len(findings['mining_domains'])} mining domains contacted, "
+            f"affected hosts: {', '.join(findings['affected_hosts'])}"
+        )
+    else:
+        log.info("[check_cryptomining] No cryptomining activity found")
+        findings["summary"] = "No cryptomining activity detected"
+
+    return findings
 
 # ---------------------------------------------------------------------------
 # Tool dispatcher
@@ -888,12 +1029,15 @@ async def build_timeline(state: dict, client: SplunkClient) -> dict:
 
 TOOL_REGISTRY: dict[str, callable] = {
     "fetch_alert_data":            fetch_alert_data,
+    "discover_schema":             discover_schema,
+    "run_spl":                     run_spl,
     "check_login_success":         check_login_success,
     "expand_to_network_logs":      expand_to_network_logs,
     "check_process_execution":     check_process_execution,
     "check_lateral_movement":      check_lateral_movement,
     "correlate_ioc":               correlate_ioc,
     "check_outbound_connections":  check_outbound_connections,
+    "check_cryptomining":          check_cryptomining,
     "build_timeline":              build_timeline,
 }
 

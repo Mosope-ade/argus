@@ -103,7 +103,7 @@ export default function App() {
 
   const agentSteps = useMemo(() => {
     const relevant = (m) =>
-      m.type === "plan" || m.type === "result" || m.type === "error" || m.type === "done";
+      m.type === "plan" || m.type === "result" || m.type === "error";
     if (!activeIncident) return ws.messages.filter(relevant);
     return ws.messages.filter(
       (m) => relevant(m) && (!m.alert_id || m.alert_id === activeIncident.alert_id)
@@ -168,6 +168,7 @@ export default function App() {
             <IncidentView
               incident={activeIncident}
               agentSteps={agentSteps}
+              onClose={() => setActiveIncidentId(null)}
             />
           ) : (
             <div className="h-full flex items-center justify-center">

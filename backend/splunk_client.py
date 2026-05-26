@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 from functools import partial
 
@@ -44,11 +45,14 @@ class SplunkClient:
     """
 
     def __init__(self) -> None:
-        self.host  = os.environ.get("SPLUNK_HOST", "localhost")
-        self.port  = int(os.environ.get("SPLUNK_PORT", "8089"))
-        self.token = os.environ["SPLUNK_TOKEN"]
-        self.index = os.environ.get("SPLUNK_INDEX", "botsv3")
+        self.host        = os.environ.get("SPLUNK_HOST", "localhost")
+        self.port        = int(os.environ.get("SPLUNK_PORT", "8089"))
+        self.token       = os.environ["SPLUNK_TOKEN"]
+        self.index       = os.environ.get("SPLUNK_INDEX", "botsv3")
+        self.time_window = os.environ.get("SPL_TIME_WINDOW", "0")
+        self.verify_tls  = os.environ.get("SPLUNK_VERIFY_TLS", "true").lower() == "true"
         self._service: splunk_client.Service | None = None
+        self._service_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Connection
@@ -64,6 +68,7 @@ class SplunkClient:
             port=self.port,
             splunkToken=self.token,
             autologin=True,
+            verify=self.verify_tls,
         )
         log.info(
             "Splunk connected — host=%s port=%d index=%s",
@@ -72,10 +77,16 @@ class SplunkClient:
         return service
 
     def _get_service(self) -> splunk_client.Service:
-        """Return cached service, reconnecting if needed."""
-        if self._service is None:
-            self._service = self._connect()
-        return self._service
+        """Return cached service, reconnecting if needed. Thread-safe."""
+        with self._service_lock:
+            if self._service is None:
+                self._service = self._connect()
+            return self._service
+
+    def _reset_service(self) -> None:
+        """Clear the cached service so the next call reconnects."""
+        with self._service_lock:
+            self._service = None
 
     # ------------------------------------------------------------------
     # Core search — synchronous (called from thread pool)
@@ -94,16 +105,21 @@ class SplunkClient:
         """
         service = self._get_service()
 
-        log.info("SPL → %s", spl)
+        log.debug("SPL → %s", spl)
 
         if not spl.strip().lower().startswith("search"):
             spl = "search " + spl
-        
-        job = service.jobs.create(
-            spl,
-            exec_mode="normal",   # async job — we poll until done
-            count=max_results,
-        )
+
+        try:
+            job = service.jobs.create(
+                spl,
+                exec_mode="normal",   # async job — we poll until done
+                count=max_results,
+                earliest_time=self.time_window,
+            )
+        except Exception:
+            self._reset_service()
+            raise
 
         deadline = time.monotonic() + _SEARCH_TIMEOUT
         while not job.is_done():

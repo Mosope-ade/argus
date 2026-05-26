@@ -34,7 +34,13 @@ export default function AlertFeed({
   const [investigating, setInvestigating] = useState({});
   const [dismissed, setDismissed] = useState(loadDismissed);
   const [showDismissed, setShowDismissed] = useState(false);
+  const [, setTick] = useState(0);
   const seenIds = useRef(new Set());
+
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 30000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -85,6 +91,14 @@ export default function AlertFeed({
         [latest.alert_id]: latest.incident_id,
       }));
     }
+
+    if (latest.type === "error") {
+      if (latest.alert_id) {
+        setInvestigating((prev) => ({ ...prev, [latest.alert_id]: false }));
+      } else {
+        setInvestigating({});
+      }
+    }
   }, [wsMessages]);
 
   useEffect(() => {
@@ -99,6 +113,10 @@ export default function AlertFeed({
     }
   }, [incidents]);
 
+  const resolveIncidentId = (alertId) =>
+    alertToIncident[alertId] ??
+    Object.values(incidents).find((r) => r.alert_id === alertId)?.incident_id;
+
   const dismissAlert = (alertId) => {
     setDismissed((prev) => {
       const next = new Set(prev);
@@ -106,7 +124,7 @@ export default function AlertFeed({
       saveDismissed(next);
       return next;
     });
-    const incidentId = alertToIncident[alertId];
+    const incidentId = resolveIncidentId(alertId);
     if (incidentId && incidentId === activeIncidentId) {
       onSelectIncident(null);
     }
@@ -136,7 +154,7 @@ export default function AlertFeed({
       saveDismissed(next);
       return next;
     });
-    const incidentId = alertToIncident[alertId];
+    const incidentId = resolveIncidentId(alertId);
     if (incidentId && incidentId === activeIncidentId) {
       onSelectIncident(null);
     }

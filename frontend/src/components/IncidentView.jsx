@@ -261,7 +261,7 @@ async function exportPDF(incident) {
   doc.save(`${incident.incident_id}.pdf`);
 }
 
-export default function IncidentView({ incident, agentSteps = [] }) {
+export default function IncidentView({ incident, agentSteps = [], onClose }) {
   if (!incident) return null;
 
   return (
@@ -279,26 +279,39 @@ export default function IncidentView({ incident, agentSteps = [] }) {
             </div>
           </div>
 
-          {/* Export button */}
-          <button
-            onClick={() => exportPDF(incident).catch(console.error)}
-            className="flex items-center gap-2 px-4 py-2 border border-[#1a2535] text-[#00d4ff] font-mono text-sm hover:border-[#00d4ff] hover:bg-[#00d4ff10] transition-colors"
-          >
-            <svg
-              className="w-4 h-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
+          <div className="flex items-center gap-2">
+            {/* Export button */}
+            <button
+              onClick={() => exportPDF(incident).catch(console.error)}
+              className="flex items-center gap-2 px-4 py-2 border border-[#1a2535] text-[#00d4ff] font-mono text-sm hover:border-[#00d4ff] hover:bg-[#00d4ff10] transition-colors"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16"
-              />
-            </svg>
-            Export PDF
-          </button>
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={1.5}
+                  d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16"
+                />
+              </svg>
+              Export PDF
+            </button>
+
+            {/* Dismiss button */}
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="px-3 py-2 border border-[#1a2535] text-[#4a6080] font-mono text-sm hover:border-[#ff3c5a] hover:text-[#ff3c5a] transition-colors"
+                title="Close report"
+              >
+                ✕
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="mt-3 text-sm text-[#4a6080] font-mono">

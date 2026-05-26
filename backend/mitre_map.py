@@ -1,29 +1,5 @@
-"""
-mitre_map.py — Deterministic MITRE ATT&CK keyword mapping.
-
-No LLM call needed. Instant dict lookup.
-Called by build_timeline() in tools.py to tag each log event.
-
-Usage:
-    from mitre_map import map_event
-
-    result = map_event("Failed password for root from 45.142.212.100")
-    # → ("T1110.001", "Brute Force: Password Guessing", "Credential Access")
-
-    result = map_event("hello world")
-    # → None
-"""
 
 from __future__ import annotations
-
-# ---------------------------------------------------------------------------
-# Keyword → (technique_id, technique_name, tactic)
-#
-# Rules:
-#   - Keys are lowercase substrings to match against log lines
-#   - First match wins — order matters for overlapping keywords
-#   - Keep the most specific keywords above the more generic ones
-# ---------------------------------------------------------------------------
 
 MITRE_MAP: dict[str, tuple[str, str, str]] = {
     # Credential Access
@@ -79,6 +55,12 @@ MITRE_MAP: dict[str, tuple[str, str, str]] = {
     # Command and Control — tool transfer
     "wget ":                  ("T1105",     "Ingress Tool Transfer",                  "Command and Control"),
     "curl ":                  ("T1105",     "Ingress Tool Transfer",                  "Command and Control"),
+    # Cryptomining
+    "coinhive":               ("T1496",     "Resource Hijacking",                     "Impact"),
+    "xmrig":                  ("T1496",     "Resource Hijacking",                     "Impact"),
+    "stratum+tcp":            ("T1496",     "Resource Hijacking",                     "Impact"),
+    "minerd":                 ("T1496",     "Resource Hijacking",                     "Impact"),
+
 
     # Defense Evasion
     "base64":                 ("T1027",     "Obfuscated Files or Information",        "Defense Evasion"),

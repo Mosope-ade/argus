@@ -17,6 +17,7 @@ Argus solves this. It takes a fired Splunk alert, runs a dynamic LLM-driven inve
 ### Key Capabilities
 
 - **Autonomous investigation** — the LLM decides what to investigate next based on evidence, not a fixed script
+- **Dynamic SPL generation** — for unknown alert types, the agent discovers available sourcetypes and writes its own Splunk queries at runtime
 - **Attack chain reconstruction** — chronological timeline of the full kill chain
 - **MITRE ATT&CK mapping** — deterministic keyword-based classification across 40+ techniques
 - **IOC correlation** — checks extracted IPs and domains against a bundled threat intel dataset
@@ -40,18 +41,23 @@ Alert fires
 fetch_alert_data          ← always runs first
     │
     ▼
+discover_schema           ← queries available sourcetypes; injected into planner context
+    │
+    ▼
 LLM chooses next action   ← based on what was found
     │
-    ├── correlate_ioc
     ├── check_login_success
     ├── check_process_execution
     ├── expand_to_network_logs
     ├── check_lateral_movement
     ├── check_outbound_connections
+    ├── check_cryptomining
+    ├── correlate_ioc
+    ├── run_spl               ← LLM writes its own SPL for unknown alert types
     └── build_timeline → generate_report
 ```
 
-The LLM drives the investigation path. Different alert types produce different investigation sequences. The reasoning log — visible in the UI in real time — shows every decision the agent makes and why.
+The LLM drives the investigation path. Different alert types produce different investigation sequences. For alert types that don't match a specific tool, the agent uses `run_spl` — it discovers what sourcetypes exist in the environment and writes a targeted SPL query itself. The reasoning log — visible in the UI in real time — shows every decision the agent makes and why.
 
 ---
 
@@ -85,7 +91,7 @@ argus/
 │   ├── main.py              # FastAPI app, WebSocket, session auth, endpoints
 │   ├── agent.py             # LLM-driven planner loop — the core of the project
 │   ├── splunk_client.py     # Splunk Python SDK wrapper (read-only)
-│   ├── tools.py             # 8 agent tool implementations
+│   ├── tools.py             # Agent tool implementations (specific + dynamic SPL)
 │   ├── prompts.py           # Planner prompt + report generator prompt
 │   ├── models.py            # Pydantic models
 │   ├── llm_provider.py      # Abstract LLMProvider + Gemini/OpenAI implementations
@@ -168,7 +174,8 @@ OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4o-mini
 
 # App
-DEMO_PASSWORD=argus2026
+PASSWORD=your-chosen-password   # required — server refuses to start if not set
+WEBHOOK_SECRET=your-webhook-secret   # required for production; omit only in local dev (a warning will be logged)
 BACKEND_PORT=8001
 CORS_ORIGIN=http://localhost:5173
 MAX_AGENT_ITERATIONS=3
@@ -200,7 +207,7 @@ Start the frontend:
 npm run dev
 ```
 
-Open http://localhost:5173 and log in with the password set in `DEMO_PASSWORD` (default: `argus2026`).
+Open http://localhost:5173 and log in with the password set in `PASSWORD`. The server will refuse to start if `PASSWORD` is not set.
 
 ### 4. Splunk configuration
 
@@ -241,9 +248,21 @@ index=botsv3 sourcetype=stream:tcp _raw="*91.207.175.249*" earliest=0
 
 Same alert settings, same webhook URL.
 
+**Cryptomining Activity Detected**
+```spl
+index=botsv3 sourcetype="stream:dns" coinhive earliest=0
+| stats count by host
+| where count > 0
+| head 1
+```
+
+Same alert settings, same webhook URL.
+
 #### Test the webhook manually
 
+Without `WEBHOOK_SECRET` set (local dev only):
 ```bash
+# SSH Brute Force
 curl -X POST http://localhost:8001/api/agent/investigate \
   -H "Content-Type: application/json" \
   -d '{
@@ -255,7 +274,111 @@ curl -X POST http://localhost:8001/api/agent/investigate \
       "host": "gacrux.i-0920036c8ca91e501"
     }
   }'
+
+# Suspicious Outbound Connection
+curl -X POST http://localhost:8001/api/agent/investigate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sid": "test-002",
+    "search_name": "Suspicious Outbound Connection",
+    "result_count": 1,
+    "result": {
+      "src_ip": "91.207.175.249",
+      "host": "gacrux.i-0920036c8ca91e501"
+    }
+  }'
+
+# Cryptomining Activity Detected
+curl -X POST http://localhost:8001/api/agent/investigate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sid": "test-003",
+    "search_name": "Cryptomining Activity Detected",
+    "result_count": 1,
+    "result": {
+      "host": "mercury.i-0920036c8ca91e501"
+    }
+  }'
 ```
+
+With `WEBHOOK_SECRET` set:
+```bash
+curl -X POST http://localhost:8001/api/agent/investigate \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-webhook-secret" \
+  -d '{
+    "sid": "test-001",
+    "search_name": "SSH Brute Force Detected",
+    "result_count": 1,
+    "result": {
+      "src_ip": "5.101.40.81",
+      "host": "gacrux.i-0920036c8ca91e501"
+    }
+  }'
+
+# Suspicious Outbound Connection
+curl -X POST http://localhost:8001/api/agent/investigate \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-webhook-secret" \
+  -d '{
+    "sid": "test-002",
+    "search_name": "Suspicious Outbound Connection",
+    "result_count": 1,
+    "result": {
+      "src_ip": "91.207.175.249",
+      "host": "gacrux.i-0920036c8ca91e501"
+    }
+  }'
+
+# Cryptomining Activity Detected
+curl -X POST http://localhost:8001/api/agent/investigate \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-webhook-secret" \
+  -d '{
+    "sid": "test-003",
+    "search_name": "Cryptomining Activity Detected",
+    "result_count": 1,
+    "result": {
+      "host": "mercury.i-0920036c8ca91e501"
+    }
+  }'
+```
+
+#### Testing dynamic SPL with unknown alert types
+
+For alert types Argus doesn't have a dedicated tool for, the agent discovers available sourcetypes and writes its own SPL. Any `search_name` that doesn't match a known pattern triggers this path:
+
+```bash
+# Windows authentication failures (WinEventLog)
+curl -X POST http://localhost:8001/api/agent/investigate \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer argus" \
+  -d '{
+    "search_name": "Windows Authentication Failure Spike",
+    "sid": "test-win-001",
+    "result_count": 1,
+    "result": {
+      "host": "hildegard",
+      "src_ip": "192.168.250.100"
+    }
+  }'
+
+# Web application attack (stream:http)
+curl -X POST http://localhost:8001/api/agent/investigate \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer argus" \
+  -d '{
+    "search_name": "Suspicious Web Request Detected",
+    "sid": "test-web-001",
+    "result_count": 1,
+    "result": {
+      "host": "brewertalk",
+      "src_ip": "45.77.65.211"
+    }
+  }'
+```
+
+Argus will query the available sourcetypes, write a targeted SPL based on the alert context, investigate, and produce a full incident report.
 
 ---
 
@@ -269,15 +392,21 @@ curl -X POST http://localhost:8001/api/agent/investigate \
 | `SPLUNK_PORT` | `8089` | Splunk REST API port |
 | `SPLUNK_TOKEN` | — | Splunk API token (required) |
 | `SPLUNK_INDEX` | `botsv3` | Splunk index to query |
+| `SPLUNK_VERIFY_TLS` | `true` | Verify Splunk TLS certificate; set `false` for local dev with self-signed cert |
+| `SPL_TIME_WINDOW` | `0` | Default `earliest=` bound for dynamic SPL queries (`0` = all time; use `-24h` etc. for live deployments) |
 | `LLM_PROVIDER` | `gemini` | LLM provider: `gemini` or `openai` |
 | `GEMINI_API_KEY` | — | Google Gemini API key |
 | `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model name |
 | `OPENAI_API_KEY` | — | OpenAI API key (fallback) |
 | `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model name |
-| `DEMO_PASSWORD` | `argus2026` | UI login password |
+| `PASSWORD` | — | UI login password — **required**, server refuses to start if missing |
+| `WEBHOOK_SECRET` | — | Bearer token Splunk must send to `/api/agent/investigate`; omit only in local dev |
+| `SECURE_COOKIES` | `false` | Set to `true` in production (requires HTTPS) |
 | `BACKEND_PORT` | `8001` | FastAPI port |
 | `CORS_ORIGIN` | `http://localhost:5173` | Frontend origin for CORS |
 | `MAX_AGENT_ITERATIONS` | `3` | Maximum planner iterations per investigation |
+| `MAX_PENDING_ALERTS` | `500` | Cap on in-memory alert queue — oldest evicted when exceeded |
+| `MAX_INCIDENTS` | `1000` | Cap on in-memory incident store — oldest evicted when exceeded |
 
 ### Frontend (`frontend/.env`)
 
@@ -290,18 +419,20 @@ curl -X POST http://localhost:8001/api/agent/investigate \
 
 ## API Reference
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/login` | Authenticate |
-| `POST` | `/api/logout` | End session |
-| `GET` | `/api/health` | Health check |
-| `POST` | `/api/agent/investigate` | Splunk webhook target |
-| `POST` | `/api/agent/reinvestigate/{id}` | Re-run agent on existing alert |
-| `GET` | `/api/alerts` | List all received alerts |
-| `DELETE` | `/api/alerts/{id}` | Delete an alert |
-| `GET` | `/api/incidents` | List all completed incident reports |
-| `GET` | `/api/incidents/{id}` | Get a single incident report |
-| `WS` | `/ws/incidents` | Real-time agent step stream |
+All endpoints except `POST /api/login` require a valid session cookie. The WebSocket endpoint requires the session cookie on the initial upgrade request.
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/login` | — | Authenticate |
+| `POST` | `/api/logout` | cookie | End session |
+| `GET` | `/api/health` | cookie | Health check |
+| `POST` | `/api/agent/investigate` | `WEBHOOK_SECRET` | Splunk webhook target |
+| `POST` | `/api/agent/reinvestigate/{id}` | cookie | Re-run agent on existing alert |
+| `GET` | `/api/alerts` | cookie | List all received alerts |
+| `DELETE` | `/api/alerts/{id}` | cookie | Delete an alert |
+| `GET` | `/api/incidents` | cookie | List all completed incident reports |
+| `GET` | `/api/incidents/{id}` | cookie | Get a single incident report |
+| `WS` | `/ws/incidents` | cookie | Real-time agent step stream |
 
 ### WebSocket message types
 
@@ -318,18 +449,21 @@ curl -X POST http://localhost:8001/api/agent/investigate \
 
 ## Agent Tools
 
-| Tool | Description |
-|---|---|
-| `fetch_alert_data` | Fetches raw alert events from Splunk — always runs first |
-| `check_login_success` | Queries for successful logins from the attacker IP |
-| `expand_to_network_logs` | Pulls network events for involved hosts |
-| `check_process_execution` | Looks for command execution after initial access |
-| `check_lateral_movement` | Checks for movement between internal hosts |
-| `correlate_ioc` | Checks IPs/domains against the bundled IOC dataset |
-| `check_outbound_connections` | Looks for suspicious outbound traffic |
-| `build_timeline` | Sorts all findings chronologically and applies MITRE mapping |
+| Tool | When it runs | Description |
+|---|---|---|
+| `fetch_alert_data` | Always — step 0 | Fetches raw alert events from Splunk |
+| `discover_schema` | Always — step 0.5 | Queries available sourcetypes; result is injected into the planner context |
+| `run_spl` | LLM choice | LLM writes its own SPL query for unknown alert types — write/export commands are rejected before dispatch |
+| `check_login_success` | LLM choice | Queries for successful logins from the attacker IP |
+| `expand_to_network_logs` | LLM choice | Pulls network events for involved hosts |
+| `check_process_execution` | LLM choice | Looks for command execution after initial access |
+| `check_lateral_movement` | LLM choice | Checks for movement between internal hosts |
+| `check_cryptomining` | LLM choice | Detects cryptomining DNS lookups for known mining pool domains |
+| `correlate_ioc` | LLM choice | Checks all IPs/domains seen in findings against the bundled IOC dataset |
+| `check_outbound_connections` | LLM choice | Looks for suspicious outbound traffic and C2 indicators |
+| `build_timeline` | Always — before report | Sorts all findings chronologically and applies MITRE mapping |
 
-All tools are **read-only** — no write operations exist anywhere in the codebase.
+All tools are **read-only**. Dynamic SPL queries generated by `run_spl` are sanitised to reject any write or export commands before execution.
 
 ---
 
@@ -371,12 +505,16 @@ The primary demo scenario uses the BOTS v3 dataset:
 ## Security Notes
 
 - All Splunk queries are **read-only** — Argus has no write access to Splunk
-- The agent prompt includes explicit injection guards — log content is treated as data only
+- Both the planner and reporter prompts include explicit injection guards — log content is treated as data only, not instructions
 - IP addresses are validated with RFC-compliant regex before insertion into SPL queries
 - Splunk credentials are stored in `.env` and gitignored
 - The `.gitignore` explicitly excludes `.env`, `*.env`, and `__pycache__`
+- Session cookies are `httponly` and `samesite=strict`; sessions expire after 24 hours
+- Login is rate-limited to 5 failed attempts per 5-minute window per IP
+- The WebSocket endpoint requires a valid session — unauthenticated connections are rejected before the handshake completes
+- Webhook body logging captures only safe summary fields; raw log content is never written to the application log
 
-For production deployment: enable `SECURE_COOKIES=true`, add `WEBHOOK_SECRET` for webhook authentication, use JWT with refresh tokens, and deploy behind HTTPS.
+For production deployment: set `SECURE_COOKIES=true` (requires HTTPS), set `WEBHOOK_SECRET`, and deploy behind a reverse proxy with TLS termination.
 
 ---
 

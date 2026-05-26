@@ -56,7 +56,7 @@ class SplunkAlert(BaseModel):
     src_ip:       str | None = Field(default=None, description="Source IP from alert result")
     host:         str | None = Field(default=None, description="Affected host")
     timestamp:    str       = Field(
-        default_factory=lambda: datetime.utcnow().isoformat()
+        default_factory=lambda: datetime.utcnow().isoformat() + "Z"
     )
     raw_result:   dict      = Field(
         default_factory=dict,
@@ -99,7 +99,7 @@ class IncidentReport(BaseModel):
     incident_id:          str
     alert_id:             str
     timestamp:            str      = Field(
-        default_factory=lambda: datetime.utcnow().isoformat()
+        default_factory=lambda: datetime.utcnow().isoformat() + "Z"
     )
     severity:             Severity
     attack_type:          str
@@ -115,22 +115,7 @@ class IncidentReport(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 3. WebSocket stream message — one agent reasoning step
-# ---------------------------------------------------------------------------
-
-class AgentStep(BaseModel):
-    type:      Literal["plan", "result", "error", "done", "ping"] = "plan"
-    action:    str  = Field(default="")
-    reasoning: str  = Field(default="")
-    data:      dict = Field(default_factory=dict)
-    iteration: int  = Field(default=0)
-    timestamp: str  = Field(
-        default_factory=lambda: datetime.utcnow().isoformat()
-    )
-
-
-# ---------------------------------------------------------------------------
-# 4. Auth
+# 3. Auth
 # ---------------------------------------------------------------------------
 
 class LoginRequest(BaseModel):

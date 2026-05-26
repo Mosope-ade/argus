@@ -31,7 +31,7 @@ import uuid
 from datetime import datetime
 
 from llm_provider import get_llm_provider, LLMProvider, _parse_json
-from models import AgentStep, IncidentReport
+from models import IncidentReport
 from prompts import build_planner_prompt, build_reporter_prompt
 from splunk_client import SplunkClient
 from tools import execute_tool, TOOL_REGISTRY
@@ -48,12 +48,14 @@ MAX_ITERATIONS: int = int(os.environ.get("MAX_AGENT_ITERATIONS", "3"))
 # "generate_report" is the terminal action — breaks the loop.
 # "fetch_alert_data" is always executed first before the LLM loop starts.
 AVAILABLE_ACTIONS: list[str] = [
+    "run_spl",                  # dynamic LLM-written query — use when alert type is unknown
     "check_login_success",
     "expand_to_network_logs",
     "check_process_execution",
     "check_lateral_movement",
     "correlate_ioc",
     "check_outbound_connections",
+    "check_cryptomining",
     "build_timeline",
     "generate_report",
 ]
@@ -127,6 +129,15 @@ class ArgusAgent:
         )
 
         # ---------------------------------------------------------------
+        # Step 0.5: Discover available sourcetypes for dynamic SPL.
+        # Result goes into state["schema"] (not findings) so the planner
+        # prompt can inject it without cluttering the evidence list.
+        # ---------------------------------------------------------------
+        log.info("Step 0.5: discover_schema")
+        schema_result = await execute_tool("discover_schema", state, self.splunk)
+        state["schema"] = schema_result
+
+        # ---------------------------------------------------------------
         # Main planner loop
         # ---------------------------------------------------------------
         while state["iteration"] < MAX_ITERATIONS:
@@ -155,6 +166,10 @@ class ArgusAgent:
 
             action    = decision.get("action", "")
             reasoning = decision.get("reasoning", "")
+
+            # For dynamic SPL: stash the LLM-written query so run_spl can find it
+            if action == "run_spl":
+                state["pending_spl"] = decision.get("spl", "")
 
             log.info(
                 "[iter %d] LLM chose: %s — %s",
@@ -303,7 +318,7 @@ class ArgusAgent:
             "action":    action,
             "reasoning": reasoning,
             "iteration": iteration,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
         })
 
     async def _stream_result(
@@ -315,14 +330,15 @@ class ArgusAgent:
             "action":    action,
             "data":      data,
             "iteration": iteration,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
         })
 
     async def _stream_error(self, message: str) -> None:
         await self.broadcast({
             "type":      "error",
+            "alert_id":  self.alert_id,
             "message":   message,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
         })
 
     # ------------------------------------------------------------------
@@ -335,6 +351,16 @@ class ArgusAgent:
         The full result is in state["findings"] — this is just for display.
         """
         tool = result.get("tool", "")
+
+        if tool == "run_spl":
+            err = result.get("error", "")
+            if err:
+                return {"summary": f"Custom SPL failed: {err}", "count": 0}
+            return {
+                "summary": f"{result.get('count', 0)} events returned from custom SPL query",
+                "count":   result.get("count", 0),
+                "spl":     result.get("spl", ""),
+            }
 
         if tool == "check_login_success":
             if result.get("success"):
@@ -380,6 +406,17 @@ class ArgusAgent:
                 "has_c2": result.get("has_c2_indicators", False),
             }
 
+        if tool == "check_cryptomining":
+            domains = result.get("mining_domains", [])
+            return {
+                "summary": (
+                    f"Cryptomining detected — {len(domains)} mining domains found"
+                    if domains else "No cryptomining activity detected"
+                ),
+                "mining_domains": domains,
+                "event_count": result.get("event_count", 0),
+            }
+
         if tool == "build_timeline":
             return {
                 "summary": f"Timeline built: {result.get('event_count', 0)} events, {len(result.get('mitre_mapping', []))} MITRE techniques",
@@ -409,7 +446,7 @@ class ArgusAgent:
         return {
             "incident_id":          "INC-FALLBACK",
             "alert_id":             alert.get("alert_id", ""),
-            "timestamp":            datetime.utcnow().isoformat(),
+            "timestamp":            datetime.utcnow().isoformat() + "Z",
             "severity":             "HIGH",
             "attack_type":          alert.get("search_name", "Unknown"),
             "summary":              (
@@ -472,6 +509,7 @@ async def run_agent(
     except Exception as exc:
         log.exception("run_agent crashed for alert %s: %s", alert_id, exc)
         await broadcast_fn({
-            "type":    "error",
-            "message": f"Investigation failed for {alert_id}: {exc}",
+            "type":     "error",
+            "alert_id": alert_id,
+            "message":  f"Investigation failed for {alert_id}: {exc}",
         })

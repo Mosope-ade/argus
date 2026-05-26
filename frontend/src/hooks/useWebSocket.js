@@ -49,10 +49,12 @@ export function useWebSocket() {
       setLastMessage(data);
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (!mountedRef.current) return;
       setStatus("disconnected");
       clearInterval(pingIntervalRef.current);
+      // 4401 = session invalid/expired — don't reconnect, let the app handle re-auth
+      if (event.code === 4401) return;
       reconnectTimeoutRef.current = setTimeout(connect, 3000);
     };
 
